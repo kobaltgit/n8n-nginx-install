@@ -1,4 +1,7 @@
 #!/bin/bash
+# ===============================================================
+# ИЗМЕНЕННЫЙ УСТАНОВОЧНЫЙ СКРИПТ (С ИНТЕГРАЦИЕЙ NGINX)
+# ===============================================================
 set -e
 
 ### Проверка прав
@@ -8,8 +11,8 @@ if (( EUID != 0 )); then
 fi
 
 clear
-echo "🌐 Автоматическая установка n8n с GitHub"
-echo "----------------------------------------"
+echo "🌐 Автоматическая установка n8n с интеграцией в Nginx"
+echo "----------------------------------------------------"
 
 ### 1. Ввод переменных
 read -p "🌐 Введите домен для n8n (например: n8n.example.com): " DOMAIN
@@ -27,30 +30,29 @@ if [ -z "$N8N_ENCRYPTION_KEY" ]; then
   echo "✅ Сгенерирован ключ шифрования: $N8N_ENCRYPTION_KEY"
 fi
 
-### 2. Установка Docker и Compose
-echo "📦 Проверка Docker..."
-if ! command -v docker &>/dev/null; then
-  curl -fsSL https://get.docker.com | sh
-fi
-
-echo "📦 Проверка NPM..."
-if ! command -v npm &>/dev/null; then
-  apt update && apt install -y npm
-fi
-
-if ! command -v docker compose &>/dev/null; then
-  curl -SL https://github.com/docker/compose/releases/download/v2.23.3/docker-compose-linux-x86_64 -o /usr/local/bin/docker-compose
-  chmod +x /usr/local/bin/docker-compose
-  ln -s /usr/local/bin/docker-compose /usr/bin/docker-compose || true
-fi
+### 2. Установка зависимостей (Docker уже должен быть от скрипта Supabase)
+echo "📦 Проверка и установка зависимостей..."
+apt-get update
+# Nginx, Certbot и Git уже должны быть установлены, но на всякий случай
+apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin git npm
 
 ### 3. Клонирование проекта с GitHub
 echo "📥 Клонируем проект с GitHub..."
+# Останавливаем старые контейнеры, если они есть
+if [ -d "/opt/n8n-install" ]; then
+    cd /opt/n8n-install
+    docker compose down || true
+    cd /
+fi
 rm -rf /opt/n8n-install
 git clone https://github.com/kalininlive/n8n-beget-install.git /opt/n8n-install
 cd /opt/n8n-install
 
-### 4. Генерация .env файлов
+### 4. Замена docker-compose.yml и генерация .env файлов
+# ВАЖНО: Убедитесь, что в папке /opt/n8n-install лежит измененный docker-compose.yml (Шаг 1)
+# Если вы запускаете этот скрипт удаленно, вам нужно сначала поместить правильный docker-compose.yml в репозиторий
+# или заменить его командой `curl` или `sed` прямо в скрипте.
+
 cat > ".env" <<EOF
 DOMAIN=$DOMAIN
 EMAIL=$EMAIL
@@ -70,30 +72,57 @@ EOF
 
 chmod 600 .env bot/.env
 
-### 4.1 Создание нужных директорий и логов
+### 5. Создание нужных директорий и логов
 mkdir -p logs backups
 touch logs/backup.log
 chown -R 1000:1000 logs backups
 chmod -R 755 logs backups
 
-### 5. Сборка кастомного образа n8n
+### 6. Сборка кастомного образа n8n и запуск Docker
+echo "🐳 Собираем кастомный образ n8n..."
 docker build -f Dockerfile.n8n -t n8n-custom:latest .
-
-### 6. Запуск docker compose (включая Telegram-бота)
+echo "🚀 Запускаем контейнеры n8n..."
 docker compose up -d
 
-### 7. Настройка cron
+### 7. === НОВЫЙ БЛОК: НАСТРОЙКА NGINX ===
+echo "🔗 Настраиваем Nginx для домена $DOMAIN..."
+cat <<EOL > /etc/nginx/sites-available/n8n
+server {
+    listen 80;
+    server_name $DOMAIN;
+
+    location / {
+        proxy_pass http://localhost:5678; # Перенаправляем на порт, который мы выставили в docker-compose
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        # Для поддержки WebSockets (важно для n8n)
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+}
+EOL
+ln -sf /etc/nginx/sites-available/n8n /etc/nginx/sites-enabled/n8n
+nginx -t && systemctl restart nginx
+
+### 8. === НОВЫЙ БЛОК: ВЫПУСК SSL СЕРТИФИКАТА ===
+echo "🔐 Получаем SSL сертификат для $DOMAIN..."
+# Используем тот же certbot, что и для Supabase
+certbot --nginx -d $DOMAIN --agree-tos -m $EMAIL --redirect --non-interactive
+
+### 9. Настройка cron
 echo "🔧 Устанавливаем cron-задачу на 02:00 каждый день"
 chmod +x ./backup_n8n.sh
 (crontab -l 2>/dev/null; echo "0 2 * * * /bin/bash /opt/n8n-install/backup_n8n.sh >> /opt/n8n-install/logs/backup.log 2>&1") | crontab -
 
-### 8. Уведомление в Telegram
+### 10. Уведомление в Telegram и финальный вывод
 curl -s -X POST https://api.telegram.org/bot$TG_BOT_TOKEN/sendMessage \
   -d chat_id=$TG_USER_ID \
   -d text="✅ Установка n8n завершена. Домен: https://$DOMAIN"
 
-### 9. Финальный вывод
 echo "📦 Активные контейнеры:"
 docker ps --format "table {{.Names}}\t{{.Status}}"
 
-echo "🎉 Готово! Открой: https://$DOMAIN"
+echo "🎉 Готово! n8n доступен по адресу: https://$DOMAIN"
