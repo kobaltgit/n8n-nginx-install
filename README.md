@@ -38,7 +38,6 @@
 ```bash
 sudo bash <(curl -sL https://raw.githubusercontent.com/kobaltgit/n8n-nginx-install/main/install.sh)
 ```
-*(Имя репозитория `n8n-nginx-install` взято как пример, замените его, если назвали иначе)*
 
 **2. Введите данные, когда скрипт их запросит:**
 
