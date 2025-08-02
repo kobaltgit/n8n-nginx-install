@@ -45,7 +45,7 @@ if [ -d "/opt/n8n-install" ]; then
     cd /
 fi
 rm -rf /opt/n8n-install
-git clone https://github.com/kalininlive/n8n-beget-install.git /opt/n8n-install
+git clone https://github.com/kobaltgit/n8n-nginx-install.git /opt/n8n-install
 cd /opt/n8n-install
 
 ### 4. Замена docker-compose.yml и генерация .env файлов
